@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+python/
+python-completo/
+python-*.exe
+python-*.zip
+python-*.tar.gz
+python-install*.log
+*.wav
+*.wave
+*_clics_por_minuto.csv
