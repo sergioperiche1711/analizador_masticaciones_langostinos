@@ -2,6 +2,8 @@
 
 Aplicación de escritorio inicial para WAV mono o estéreo. Lee el audio en bloques, detecta transitorios y grafica el número detectado en cada minuto. También puede exportar esos conteos a CSV.
 
+La exportación predeterminada es Excel (.xlsx), con una tabla y filtros. También se puede guardar como CSV con punto y coma, adecuado para muchas configuraciones de Excel en español. Cada fila incluye la duración del intervalo, los clics detectados, el nivel RMS digital (dBFS) y la frecuencia dominante (Hz y kHz). Estas dos últimas medidas describen el audio filtrado del minuto completo, incluido el ruido; no identifican cada clic. El nivel dBFS no es presión sonora calibrada en dB SPL. La frecuencia dominante es una estimación espectral con 2048 puntos y su resolución depende de la frecuencia de muestreo. Para silencio, se deja la celda vacía.
+
 ## Instalación
 
 Si cuentas con la versión portátil que incluye la carpeta `python-completo`, haz doble clic en **Abrir analizador.bat**. Elige un archivo WAV y pulsa **Analizar**; después puedes guardar los resultados en CSV. La instalación local de Python no está incluida en el repositorio.

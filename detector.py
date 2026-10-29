@@ -20,6 +20,8 @@ class AnalysisResult:
     duration_seconds: float
     counts_per_minute: list[int]
     event_times_seconds: list[float]
+    rms_dbfs: list[float | None]
+    dominant_hz: list[float | None]
 
 
 def analyze_wav(
@@ -64,6 +66,13 @@ def analyze_wav(
         counts: list[int] = []
         event_times: list[float] = []
         envelope_frame_index = 0
+        # Spectral statistics describe the whole filtered minute, not just clicks.
+        energy = np.zeros((total_frames + 60 * sample_rate - 1) // (60 * sample_rate))
+        sample_counts = np.zeros(len(energy), dtype=np.int64)
+        fft_size = 2048
+        spectra = np.zeros((len(energy), fft_size // 2 + 1), dtype=np.float64)
+        spectrum_weights = np.zeros(len(energy), dtype=np.int64)
+        audio_position = 0
 
         def finish_minute(envelope_parts: list[np.ndarray], minute_index: int) -> None:
             if envelope_parts:
@@ -90,6 +99,19 @@ def analyze_wav(
             mono = np.mean(chunk, axis=1, dtype=np.float32)
             if sos is not None:
                 mono, zi = signal.sosfilt(sos, mono, zi=zi)
+            cursor_samples = 0
+            while cursor_samples < len(mono):
+                minute = audio_position // (60 * sample_rate)
+                take = min(len(mono) - cursor_samples, (minute + 1) * 60 * sample_rate - audio_position)
+                part = mono[cursor_samples:cursor_samples + take]
+                energy[minute] += np.dot(part.astype(np.float64), part.astype(np.float64))
+                sample_counts[minute] += take
+                if take >= 2:
+                    _, power = signal.welch(part, fs=sample_rate, nperseg=min(fft_size, take), nfft=fft_size)
+                    spectra[minute] += power * take
+                    spectrum_weights[minute] += take
+                audio_position += take
+                cursor_samples += take
             if samples_carry.size:
                 mono = np.concatenate((samples_carry, mono))
             complete = (mono.size // frame_width) * frame_width
@@ -137,6 +159,10 @@ def analyze_wav(
         duration_seconds=duration,
         counts_per_minute=counts,
         event_times_seconds=event_times,
+        rms_dbfs=[float(10 * np.log10(e / n)) if e > 0 and n else None for e, n in zip(energy, sample_counts)],
+        dominant_hz=[float(np.argmax(spectrum[1:]) + 1) * sample_rate / fft_size
+                     if weight and np.any(spectrum[1:] > 0) else None
+                     for spectrum, weight in zip(spectra, spectrum_weights)],
     )
 
 
@@ -144,8 +170,48 @@ def save_csv(result: AnalysisResult, output_path: str | Path) -> None:
     """Write the per-minute click counts to CSV."""
     output_path = Path(output_path)
     with output_path.open("w", newline="", encoding="utf-8-sig") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["minuto", "clics"])
-        for minute, count in enumerate(result.counts_per_minute, start=1):
-            writer.writerow([minute, count])
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(EXPORT_HEADERS)
+        for row in export_rows(result):
+            writer.writerow([str(round(value, 3)).replace('.', ',') if isinstance(value, float) else value for value in row])
+
+
+EXPORT_HEADERS = ["Minuto", "Duración (s)", "Clics detectados", "Nivel RMS filtrado (dBFS)", "Frecuencia dominante (Hz)", "Frecuencia dominante (kHz)"]
+
+
+def export_rows(result: AnalysisResult):
+    for i, count in enumerate(result.counts_per_minute):
+        hz = result.dominant_hz[i]
+        yield [i + 1, min(60.0, max(0.0, result.duration_seconds - i * 60)), count,
+               result.rms_dbfs[i], hz, hz / 1000 if hz is not None else None]
+
+
+def save_excel(result: AnalysisResult, output_path: str | Path) -> None:
+    from openpyxl import Workbook
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Resultados"
+    sheet.append(EXPORT_HEADERS)
+    for row in export_rows(result):
+        sheet.append(row)
+    table = Table(displayName="ResultadosAudio", ref=f"A1:F{sheet.max_row}")
+    table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+    sheet.add_table(table)
+    sheet.freeze_panes = "A2"
+    for column, width in {"A": 12, "B": 18, "C": 20, "D": 28, "E": 29, "F": 30}.items():
+        sheet.column_dimensions[column].width = width
+    for row in sheet.iter_rows(min_row=2, min_col=2, max_col=6):
+        for cell in row:
+            if cell.column != 3:
+                cell.number_format = "0.00"
+    notes = workbook.create_sheet("Interpretación")
+    for line in ["Medidas calculadas sobre la señal filtrada y mezclada a mono.",
+                 "La frecuencia dominante corresponde al audio del minuto completo, incluidos ruidos; no identifica la frecuencia de cada clic.",
+                 "dBFS es nivel digital RMS relativo a escala completa, no presión sonora ni dB SPL calibrados.",
+                 "Una celda vacía indica ausencia de señal medible. El último minuto puede estar incompleto."]:
+        notes.append([line])
+    notes.column_dimensions["A"].width = 110
+    workbook.save(output_path)
 

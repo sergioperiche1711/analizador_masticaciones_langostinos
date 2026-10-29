@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 
-from detector import AnalysisResult, analyze_wav, save_csv
+from detector import AnalysisResult, analyze_wav, save_csv, save_excel
 
 
 class AudioClickApp:
@@ -56,7 +56,7 @@ class AudioClickApp:
         toolbar = NavigationToolbar2Tk(self.canvas, root, pack_toolbar=False)
         toolbar.update()
         toolbar.pack(fill="x", padx=12)
-        self.save_button = ttk.Button(root, text="Guardar conteo como CSV…", command=self.export_csv, state="disabled")
+        self.save_button = ttk.Button(root, text="Exportar a Excel o CSV…", command=self.export_csv, state="disabled")
         self.save_button.pack(anchor="e", padx=12, pady=10)
 
     def choose_file(self) -> None:
@@ -138,16 +138,19 @@ class AudioClickApp:
     def export_csv(self) -> None:
         if self.result is None:
             return
-        default_name = f"{Path(self.result.source).stem}_clics_por_minuto.csv"
+        default_name = f"{Path(self.result.source).stem}_clics_por_minuto.xlsx"
         path = filedialog.asksaveasfilename(
-            title="Guardar conteo", defaultextension=".csv", initialfile=default_name,
-            filetypes=[("CSV", "*.csv")],
+            title="Exportar resultados", defaultextension=".xlsx", initialfile=default_name,
+            filetypes=[("Excel", "*.xlsx"), ("CSV", "*.csv")],
         )
         if path:
             try:
-                save_csv(self.result, path)
-                self.status.set(f"CSV guardado: {path}")
-            except OSError as exc:
+                if Path(path).suffix.lower() == ".csv":
+                    save_csv(self.result, path)
+                else:
+                    save_excel(self.result, path)
+                self.status.set(f"Resultados guardados: {path}")
+            except (OSError, ValueError, ImportError) as exc:
                 messagebox.showerror("No se pudo guardar", str(exc))
 
 
