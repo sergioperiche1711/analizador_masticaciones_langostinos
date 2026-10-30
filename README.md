@@ -6,15 +6,21 @@ La exportación predeterminada es Excel (.xlsx), con una tabla y filtros. Tambi�
 
 ## Instalación
 
-Si cuentas con la versión portátil que incluye la carpeta `python-completo`, haz doble clic en **Abrir analizador.bat**. Elige un archivo WAV y pulsa **Analizar**; después puedes guardar los resultados en CSV. La instalación local de Python no está incluida en el repositorio.
+La descarga de GitHub contiene el código, pero no incluye Python ni sus bibliotecas. En Windows de 64 bits:
+
+1. Instala [Python](https://www.python.org/downloads/windows/) 3.10 o posterior. Durante la instalación, activa la opción para agregar Python al PATH y asegúrate de incluir el lanzador `py` y Tcl/Tk.
+2. Descomprime el proyecto si lo descargaste como ZIP. Abre la carpeta que contiene `app.py`.
+3. Con conexión a Internet, haz doble clic en **Instalar dependencias.bat** y espera el mensaje de instalación completada. Este paso se hace una vez y crea un entorno `.venv` en la carpeta.
+4. Haz doble clic en **Abrir analizador.bat**, selecciona un WAV y pulsa **Analizar**.
+
+Si tienes una copia portátil que incluye la carpeta `python-completo`, puedes abrir directamente **Abrir analizador.bat**. Esta carpeta no se incluye en GitHub.
 
 Para instalarlo en otro equipo con Python 3.10 o posterior, abre PowerShell en esta carpeta y ejecuta:
 
 ```powershell
 py -m venv .venv
-.venv\Scripts\Activate.ps1
-py -m pip install -r requirements.txt
-py app.py
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe app.py
 ```
 
 ## Ajustes
