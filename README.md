@@ -1,8 +1,12 @@
 # Analizador de clics de langostino
 
+## Edición portátil ZounD 1.0
+
+La nueva interfaz está en `desktop.py`. Consulta `PORTABLE.md` para sus funciones, unidades, límites y estado de validación. La compilación se genera con `Compilar portable.ps1` y produce `dist/ZounD/ZounD.exe` junto a sus dependencias. Para distribuirla se debe comprimir y extraer la carpeta completa, no solo el ejecutable. Está destinada a Windows 10/11 x64; no se declara compatible con Windows 8. El ejecutable no está firmado.
+
 Aplicación de escritorio inicial para WAV mono o estéreo. Lee el audio en bloques, detecta transitorios y grafica el número detectado en cada minuto. También puede exportar esos conteos a CSV.
 
-La exportación predeterminada es Excel (.xlsx), con una tabla y filtros. También se puede guardar como CSV con punto y coma, adecuado para muchas configuraciones de Excel en español. Cada fila incluye la duración del intervalo, los clics detectados, el nivel RMS digital (dBFS) y la frecuencia dominante (Hz y kHz). Estas dos últimas medidas describen el audio filtrado del minuto completo, incluido el ruido; no identifican cada clic. El nivel dBFS no es presión sonora calibrada en dB SPL. La frecuencia dominante es una estimación espectral con 2048 puntos y su resolución depende de la frecuencia de muestreo. Para silencio, se deja la celda vacía.
+La exportación predeterminada es Excel (.xlsx), con una tabla y filtros. También se puede guardar como CSV con punto y coma, adecuado para muchas configuraciones de Excel en español. Cada fila incluye la duración del intervalo, los clics detectados, el nivel RMS digital (dBFS) y la frecuencia media (Hz, kHz y MHz). La frecuencia media es el promedio ponderado por potencia del espectro Welch del minuto filtrado. Ambas medidas describen el audio completo, incluido el ruido; no identifican cada clic. El nivel dBFS no es presión sonora calibrada en dB SPL. El análisis espectral usa 2048 puntos y su resolución depende de la frecuencia de muestreo. Para silencio, se deja la celda vacía.
 
 ## Instalación
 
@@ -20,7 +24,7 @@ Para instalarlo en otro equipo con Python 3.10 o posterior, abre PowerShell en e
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe app.py
+.\.venv\Scripts\python.exe desktop.py
 ```
 
 ## Ajustes

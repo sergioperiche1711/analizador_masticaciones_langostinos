@@ -6,6 +6,7 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+import math
 
 import numpy as np
 import soundfile as sf
@@ -21,7 +22,15 @@ class AnalysisResult:
     counts_per_minute: list[int]
     event_times_seconds: list[float]
     rms_dbfs: list[float | None]
-    dominant_hz: list[float | None]
+    mean_hz: list[float | None]
+    settings: dict
+    clipped_percent: list[float]
+    envelope: np.ndarray
+    envelope_step: float
+
+
+class AnalysisCancelled(Exception):
+    pass
 
 
 def analyze_wav(
@@ -32,6 +41,8 @@ def analyze_wav(
     highpass_hz: float = 1000.0,
     block_frames: int = 262_144,
     progress: Callable[[float], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
+    channel: int = 0,
 ) -> AnalysisResult:
     """Detect transient clicks using a filtered 1 ms RMS envelope.
 
@@ -39,6 +50,8 @@ def analyze_wav(
     envelope is retained at a time. Sensitivity is the robust-MAD multiplier.
     """
     path = Path(path)
+    if not all(math.isfinite(v) for v in (sensitivity, refractory_ms, highpass_hz)) or sensitivity <= 0 or refractory_ms <= 0 or block_frames < 1:
+        raise ValueError('Parámetros inválidos.')
     with sf.SoundFile(path) as audio:
         sample_rate = int(audio.samplerate)
         channels = int(audio.channels)
@@ -46,6 +59,10 @@ def analyze_wav(
         duration = total_frames / sample_rate if sample_rate else 0.0
         if total_frames == 0:
             raise ValueError("El archivo no contiene audio.")
+        if channel < 0 or channel >= channels:
+            raise ValueError('El canal seleccionado no existe en este archivo.')
+        if duration > 7200.1 or path.stat().st_size > 550_000_000:
+            raise ValueError('Esta versión admite hasta 2 horas y 500 MiB aproximadamente.')
 
         if highpass_hz < 0 or highpass_hz >= sample_rate / 2:
             raise ValueError(
@@ -66,6 +83,8 @@ def analyze_wav(
         counts: list[int] = []
         event_times: list[float] = []
         envelope_frame_index = 0
+        all_envelopes = []
+        thresholds = []
         # Spectral statistics describe the whole filtered minute, not just clicks.
         energy = np.zeros((total_frames + 60 * sample_rate - 1) // (60 * sample_rate))
         sample_counts = np.zeros(len(energy), dtype=np.int64)
@@ -73,6 +92,7 @@ def analyze_wav(
         spectra = np.zeros((len(energy), fft_size // 2 + 1), dtype=np.float64)
         spectrum_weights = np.zeros(len(energy), dtype=np.int64)
         audio_position = 0
+        clipped = np.zeros(len(energy), dtype=np.int64)
 
         def finish_minute(envelope_parts: list[np.ndarray], minute_index: int) -> None:
             if envelope_parts:
@@ -87,16 +107,19 @@ def analyze_wav(
             # Fall back to a tiny scale-relative floor for near-silent recordings.
             floor = max(float(np.max(envelope)) * 1e-6, np.finfo(np.float32).eps)
             threshold = median + max(float(sensitivity) * 1.4826 * mad, floor)
-            distance = max(1, round(refractory_ms))
-            peaks, _ = signal.find_peaks(envelope, height=threshold, distance=distance)
-            counts.append(int(peaks.size))
-            event_times.extend((minute_index * 60.0 + peaks * frame_width / sample_rate).tolist())
+            all_envelopes.append(envelope.astype(np.float32))
+            thresholds.append(np.full(len(envelope), threshold, dtype=np.float32))
 
         while True:
+            if cancel and cancel():
+                raise AnalysisCancelled('Análisis cancelado.')
             chunk = audio.read(block_frames, dtype="float32", always_2d=True)
             if chunk.size == 0:
                 break
-            mono = np.mean(chunk, axis=1, dtype=np.float32)
+            if not np.all(np.isfinite(chunk)):
+                raise ValueError('El archivo contiene muestras no válidas.')
+            mono = chunk[:, channel]
+            raw = mono
             if sos is not None:
                 mono, zi = signal.sosfilt(sos, mono, zi=zi)
             cursor_samples = 0
@@ -104,7 +127,8 @@ def analyze_wav(
                 minute = audio_position // (60 * sample_rate)
                 take = min(len(mono) - cursor_samples, (minute + 1) * 60 * sample_rate - audio_position)
                 part = mono[cursor_samples:cursor_samples + take]
-                energy[minute] += np.dot(part.astype(np.float64), part.astype(np.float64))
+                clipped[minute] += np.count_nonzero(np.abs(raw[cursor_samples:cursor_samples + take]) >= 0.9999)
+                energy[minute] += np.einsum('i,i->', part, part, dtype=np.float64)
                 sample_counts[minute] += take
                 if take >= 2:
                     _, power = signal.welch(part, fs=sample_rate, nperseg=min(fft_size, take), nfft=fft_size)
@@ -145,10 +169,27 @@ def analyze_wav(
 
         # A final partial envelope frame represents the last samples.
         if samples_carry.size:
+            minute_for_frame = (envelope_frame_index * frame_width) // (60 * sample_rate)
+            if minute_for_frame != current_minute:
+                finish_minute(minute_envelope, current_minute)
+                minute_envelope = []
+                current_minute = minute_for_frame
             partial = np.sqrt(np.mean(samples_carry * samples_carry, dtype=np.float32))
             minute_envelope.append(np.array([partial], dtype=np.float32))
         if minute_envelope or not counts:
             finish_minute(minute_envelope, current_minute)
+
+        if cancel and cancel():
+            raise AnalysisCancelled('Análisis cancelado.')
+        # Detect once over the compact envelope, keeping separation across minute boundaries.
+        compact = np.concatenate(all_envelopes)
+        height = np.concatenate(thresholds)
+        peaks, _ = signal.find_peaks(np.pad(compact, (1, 1), constant_values=-np.inf),
+            height=np.pad(height, (1, 1), constant_values=np.inf),
+            distance=max(1, math.ceil(refractory_ms * sample_rate / (1000 * frame_width))))
+        peaks -= 1
+        event_times = (peaks * frame_width / sample_rate).tolist()
+        counts = np.bincount(np.floor(np.array(event_times) / 60).astype(int), minlength=len(energy)).tolist()
 
     # A 60-minute recording with a partial final minute has one value per
     # started minute; reports call this the minute containing the event.
@@ -160,9 +201,14 @@ def analyze_wav(
         counts_per_minute=counts,
         event_times_seconds=event_times,
         rms_dbfs=[float(10 * np.log10(e / n)) if e > 0 and n else None for e, n in zip(energy, sample_counts)],
-        dominant_hz=[float(np.argmax(spectrum[1:]) + 1) * sample_rate / fft_size
+        mean_hz=[float(np.dot(np.arange(1, len(spectrum)), spectrum[1:]) / np.sum(spectrum[1:]) * sample_rate / fft_size)
                      if weight and np.any(spectrum[1:] > 0) else None
                      for spectrum, weight in zip(spectra, spectrum_weights)],
+        settings={'Sensibilidad MAD': sensitivity, 'Separación mínima (ms)': refractory_ms,
+                  'Filtro pasa-altos (Hz)': highpass_hz, 'Canal (desde 1)': channel + 1,
+                  'Muestreo (Hz)': sample_rate, 'Resolución espectral (Hz)': sample_rate / fft_size},
+        clipped_percent=(100 * clipped / np.maximum(sample_counts, 1)).tolist(),
+        envelope=compact, envelope_step=frame_width / sample_rate,
     )
 
 
@@ -173,20 +219,23 @@ def save_csv(result: AnalysisResult, output_path: str | Path) -> None:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(EXPORT_HEADERS)
         for row in export_rows(result):
-            writer.writerow([str(round(value, 3)).replace('.', ',') if isinstance(value, float) else value for value in row])
+            writer.writerow([str(round(value, 6)).replace('.', ',') if isinstance(value, float) else value for value in row])
 
 
-EXPORT_HEADERS = ["Minuto", "Duración (s)", "Clics detectados", "Nivel RMS filtrado (dBFS)", "Frecuencia dominante (Hz)", "Frecuencia dominante (kHz)"]
+EXPORT_HEADERS = ["Minuto", "Duración (s)", "Clics detectados", "Nivel RMS filtrado (dBFS)", "Frecuencia media (Hz)", "Frecuencia media (kHz)", "Frecuencia media (MHz)"]
 
 
 def export_rows(result: AnalysisResult):
     for i, count in enumerate(result.counts_per_minute):
-        hz = result.dominant_hz[i]
+        hz = result.mean_hz[i]
         yield [i + 1, min(60.0, max(0.0, result.duration_seconds - i * 60)), count,
-               result.rms_dbfs[i], hz, hz / 1000 if hz is not None else None]
+               result.rms_dbfs[i], hz, hz / 1000 if hz is not None else None,
+               hz / 1e6 if hz is not None else None]
 
 
 def save_excel(result: AnalysisResult, output_path: str | Path) -> None:
+    if len(result.event_times_seconds) > 1_048_575:
+        raise ValueError('Hay más eventos de los que admite una hoja de Excel. Exporta el resumen como CSV o revisa la sensibilidad.')
     from openpyxl import Workbook
     from openpyxl.worksheet.table import Table, TableStyleInfo
 
@@ -196,22 +245,44 @@ def save_excel(result: AnalysisResult, output_path: str | Path) -> None:
     sheet.append(EXPORT_HEADERS)
     for row in export_rows(result):
         sheet.append(row)
-    table = Table(displayName="ResultadosAudio", ref=f"A1:F{sheet.max_row}")
+    table = Table(displayName="ResultadosAudio", ref=f"A1:G{sheet.max_row}")
     table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
     sheet.add_table(table)
     sheet.freeze_panes = "A2"
     for column, width in {"A": 12, "B": 18, "C": 20, "D": 28, "E": 29, "F": 30}.items():
         sheet.column_dimensions[column].width = width
-    for row in sheet.iter_rows(min_row=2, min_col=2, max_col=6):
+    sheet.column_dimensions['G'].width = 32
+    for row in sheet.iter_rows(min_row=2, min_col=2, max_col=7):
         for cell in row:
             if cell.column != 3:
                 cell.number_format = "0.00"
+            if cell.column == 7:
+                cell.number_format = '0.000000'
+    events = workbook.create_sheet('Eventos')
+    events.append(['Evento candidato', 'Tiempo (s)', 'Minuto'])
+    for i, seconds in enumerate(result.event_times_seconds):
+        events.append([i + 1, seconds, int(seconds // 60) + 1])
+        events.cell(i + 2, 2).number_format = '0.000'
+    events.freeze_panes = 'A2'
+    for col in ('A', 'B', 'C'):
+        events.column_dimensions[col].width = 23
     notes = workbook.create_sheet("Interpretación")
-    for line in ["Medidas calculadas sobre la señal filtrada y mezclada a mono.",
-                 "La frecuencia dominante corresponde al audio del minuto completo, incluidos ruidos; no identifica la frecuencia de cada clic.",
+    for line in ["ZounD 1.0 — detector experimental; no confirma masticaciones.",
+                 "Medidas calculadas sobre el canal seleccionado después del filtro.",
+                 "Frecuencia media: promedio de frecuencias ponderado por potencia espectral Welch del minuto filtrado, sin componente continua. Incluye ruido; no es promedio por clic.",
                  "dBFS es nivel digital RMS relativo a escala completa, no presión sonora ni dB SPL calibrados.",
                  "Una celda vacía indica ausencia de señal medible. El último minuto puede estar incompleto."]:
         notes.append([line])
     notes.column_dimensions["A"].width = 110
+    config = workbook.create_sheet('Configuración')
+    config.append(['Parámetro', 'Valor'])
+    config.append(['Archivo', Path(result.source).name])
+    config.cell(2, 2).data_type = 's'
+    for key, value in result.settings.items():
+        config.append([key, value])
+    config.append(['Duración (s)', result.duration_seconds])
+    config.append(['MP3', 'Compresión con pérdida: puede modificar impulsos y niveles; preferir WAV original.'])
+    config.column_dimensions['A'].width = 35
+    config.column_dimensions['B'].width = 90
     workbook.save(output_path)
 

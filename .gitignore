@@ -10,3 +10,8 @@ python-install*.log
 *.wav
 *.wave
 *_clics_por_minuto.csv
+build/
+dist/
+entrega/
+verificacion/
+*.spec

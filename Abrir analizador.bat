@@ -1,9 +1,9 @@
 @echo off
 cd /d "%~dp0"
 if exist "%~dp0.venv\Scripts\python.exe" (
-    "%~dp0.venv\Scripts\python.exe" "%~dp0app.py"
+    "%~dp0.venv\Scripts\python.exe" "%~dp0desktop.py"
 ) else if exist "%~dp0python-completo\python\python.exe" (
-    "%~dp0python-completo\python\python.exe" "%~dp0app.py"
+    "%~dp0python-completo\python\python.exe" "%~dp0desktop.py"
 ) else (
     echo No se encontro Python para el analizador.
     echo Primero instala Python y ejecuta "Instalar dependencias.bat".
