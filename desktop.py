@@ -1,4 +1,13 @@
-"""ZounD 1.0: interfaz local para WAV y MP3."""
+"""ZounD 1.0: interfaz local para WAV y MP3.
+
+Ejecución: mantén desktop.py y detector.py en la misma carpeta y ejecuta:
+    python -m pip install numpy scipy soundfile matplotlib openpyxl
+    python desktop.py
+
+Se requiere Python con tkinter (incluido habitualmente en Python para Windows).
+Dependencias: NumPy (cálculo), SciPy (procesamiento de señales), SoundFile
+(lectura de audio), Matplotlib (gráficos) y OpenPyXL (exportación Excel).
+"""
 import math
 import queue
 import threading
